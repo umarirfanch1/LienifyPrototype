@@ -21,15 +21,15 @@ def ensure_templates():
         with zipfile.ZipFile(ZIP_NAME, 'r') as z:
             z.extractall(EXTRACT_BASE)
 
-    # find Arizona folder
+    # find "Arizona Templates" folder
     for root, dirs, files in os.walk(EXTRACT_BASE):
-        if os.path.basename(root).lower() == "arizona":
+        if os.path.basename(root).lower() in ["arizona templates", "arizona"]:
             return root
     return None
 
 AZ_FOLDER = ensure_templates()
 if not AZ_FOLDER:
-    st.error("Arizona folder not found inside ZIP")
+    st.error("Arizona Templates folder not found inside ZIP")
     st.stop()
 
 # Template filenames (docx inside ZIP)
@@ -86,7 +86,7 @@ if st.session_state.step == 0:
 elif st.session_state.step == 1:
     show_header()
     st.info("""
-**Thanks for selecting Arizona. Have a look at compliance check before we proceed:**
+**Thanks for selecting Arizona. Please review the compliance summary before we proceed:**
 
 - Preliminary Notice: must be sent within 20 days of first delivery.  
 - Conditional waivers bind upon evidence of payment; Unconditional bind upon signing.  
@@ -99,7 +99,7 @@ elif st.session_state.step == 1:
         next_step()
 
 # -------------------------
-# Step 2: Pre-Screening (one question per screen)
+# Step 2-5: Pre-Screening (one question per screen)
 # -------------------------
 elif st.session_state.step in [2,3,4,5]:
     show_header()
@@ -130,7 +130,7 @@ elif st.session_state.step in [2,3,4,5]:
             st.button("Next →", on_click=next_step)
 
 # -------------------------
-# Step 3: Project & Payment Details
+# Step 6: Project & Payment Details
 # -------------------------
 elif st.session_state.step == 6:
     show_header()
@@ -151,7 +151,6 @@ elif st.session_state.step == 6:
     st.session_state.PropertyDescription = st.text_area("Property Description / Legal Description", height=100)
 
     if st.button("Next →"):
-        # Simple required validation
         required_fields = ["OwnerName","ProjectAddress","CustomerName","LienorName","LicenseNumber","PaymentAmount","ExecutionDate","JobNumber","PropertyDescription"]
         missing = [f for f in required_fields if not st.session_state.get(f)]
         if missing:
@@ -160,7 +159,7 @@ elif st.session_state.step == 6:
             next_step()
 
 # -------------------------
-# Step 4: Generate Form
+# Step 7: Generate Form
 # -------------------------
 elif st.session_state.step == 7:
     show_header()
@@ -180,12 +179,11 @@ elif st.session_state.step == 7:
         else:
             doc = Document(template_path)
 
-            # Simple underscore replacement after labels
+            # Replace underscores with user data
             def replace_field(paragraph, label, value):
                 if label in paragraph.text:
                     paragraph.text = paragraph.text.replace("___________________________", value)
 
-            # Map all fields
             for p in doc.paragraphs:
                 replace_field(p, "Project:", st.session_state.ProjectAddress)
                 replace_field(p, "Job No:", st.session_state.JobNumber)
