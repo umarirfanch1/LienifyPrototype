@@ -1,4 +1,4 @@
-# app.py - Lienify Arizona Lien & Waiver Form Generator (Streamlit)
+# app.py - Lienify Arizona Lien & Waiver Form Generator
 import streamlit as st
 import zipfile, os, tempfile
 from docx import Document
@@ -46,7 +46,7 @@ def find_template_file(filename):
     return None
 
 # ---------------------
-# Session state
+# Session state init
 # ---------------------
 if "step" not in st.session_state:
     st.session_state.step = 0
@@ -58,28 +58,29 @@ def prev_step():
     st.session_state.step = max(0, st.session_state.step - 1)
 
 # ---------------------
-# Step 0: Welcome & state
+# Step 0: Welcome & State
 # ---------------------
 if st.session_state.step == 0:
     st.header("Lienify — Lien & Waiver Form Generator")
-    st.write("Welcome to Lienify Waiver and Lien Form Generator.")
+    st.write("Welcome to **Lienify** — Lien & Waiver Form Generator.")
     
     STATES = ["Arizona","California","Nevada","Texas","Florida","Georgia","Washington","Oregon","Colorado","Utah","New Mexico","Idaho"]
     state = st.selectbox("Select your state", [""] + STATES)
     
     if state == "Arizona":
         st.session_state.state = state
-        st.session_state.step = 0.5
+        if st.button("Next →"):
+            next_step()
     elif state != "":
-        st.warning("Currently only Arizona is available for testing.")
+        st.warning("Currently only Arizona is supported.")
 
 # ---------------------
-# Step 0.5: Arizona compliance
+# Step 1: Arizona Compliance
 # ---------------------
-if st.session_state.step == 0.5:
+if st.session_state.step == 1:
     st.header("Lienify — Lien & Waiver Form Generator")
-    st.subheader("Thanks for selecting Arizona")
-    st.write("Have a look at compliance summary before we proceed:")
+    st.subheader("Arizona Compliance Summary")
+    st.write("Please review the compliance summary before continuing.")
     
     st.info("""
 - Preliminary Notice: must be sent within 20 days of first delivery.
@@ -90,17 +91,23 @@ if st.session_state.step == 0.5:
 - Payment bonds, tenant-as-agent, highway projects and UPL rules may affect lien eligibility.
     """)
     
-    if st.button("Yes, I understood. Please proceed"):
-        next_step()
+    cols = st.columns([1,1])
+    with cols[0]:
+        if st.button("Back"):
+            prev_step()
+    with cols[1]:
+        if st.button("Yes, I understood. Next →"):
+            next_step()
 
 # ---------------------
-# Step 1: Role
+# Step 2: Role
 # ---------------------
-if st.session_state.step == 1:
+if st.session_state.step == 2:
     st.header("Lienify — Lien & Waiver Form Generator")
-    st.write("Please fill out the required form.")
+    st.write("Please fill out the required information.")
     
     role = st.radio("Your role on this project:", ["Contractor","Subcontractor","Supplier","Material Provider"])
+    
     cols = st.columns([1,1])
     with cols[0]:
         if st.button("Back"):
@@ -111,13 +118,14 @@ if st.session_state.step == 1:
             next_step()
 
 # ---------------------
-# Step 2: Payment type
+# Step 3: Payment Type
 # ---------------------
-if st.session_state.step == 2:
+if st.session_state.step == 3:
     st.header("Lienify — Lien & Waiver Form Generator")
-    st.write("Please fill out the required form.")
+    st.write("Please fill out the required information.")
     
     payment_type = st.radio("Is this waiver for a Progress or Final payment?", ["Progress","Final"])
+    
     cols = st.columns([1,1])
     with cols[0]:
         if st.button("Back"):
@@ -128,13 +136,14 @@ if st.session_state.step == 2:
             next_step()
 
 # ---------------------
-# Step 3: Payment received
+# Step 4: Payment Received
 # ---------------------
-if st.session_state.step == 3:
+if st.session_state.step == 4:
     st.header("Lienify — Lien & Waiver Form Generator")
-    st.write("Please fill out the required form.")
+    st.write("Please fill out the required information.")
     
     payment_received = st.radio("Has payment been received for this waiver?", ["Yes","No"])
+    
     cols = st.columns([1,1])
     with cols[0]:
         if st.button("Back"):
@@ -142,23 +151,21 @@ if st.session_state.step == 3:
     with cols[1]:
         if payment_received:
             st.session_state.payment_received = payment_received
-            
-            # Determine which form will be generated
+            # show which form will be generated
             cond = "Yes" if payment_received == "No" else "No"
             template_file = TEMPLATE_MAP[(st.session_state.payment_type, cond)]
-            st.success(f"Based on your selections, this form will be generated:\n**{template_file}**")
-            
+            st.success(f"Based on your selections, the following form will be generated:\n**{template_file}**")
             if st.button("Next →"):
                 next_step()
 
 # ---------------------
-# Step 4: First Delivery
+# Step 5: First Delivery Date
 # ---------------------
-if st.session_state.step == 4:
+if st.session_state.step == 5:
     st.header("Lienify — Lien & Waiver Form Generator")
-    st.write("Please fill out the required form.")
     
     first_delivery = st.date_input("First Delivery Date (for Preliminary Notice)")
+    
     cols = st.columns([1,1])
     with cols[0]:
         if st.button("Back"):
@@ -171,11 +178,10 @@ if st.session_state.step == 4:
                 next_step()
 
 # ---------------------
-# Step 5: Project & Payment Details
+# Step 6: Project & Payment Details
 # ---------------------
-if st.session_state.step == 5:
+if st.session_state.step == 6:
     st.header("Lienify — Lien & Waiver Form Generator")
-    st.write("Please fill out the required form.")
     
     OwnerName = st.text_input("Owner Name")
     ProjectAddress = st.text_input("Project / Job Address")
@@ -188,6 +194,7 @@ if st.session_state.step == 5:
         WorkThroughDate = st.date_input("Work Through Date (required)")
     else:
         WorkThroughDate = st.date_input("Work Through Date (optional)", value=None)
+    
     ExecutionDate = st.date_input("Execution Date", value=datetime.today())
     JobNumber = st.text_input("Job / Project Number")
     PropertyDescription = st.text_area("Property Description / Legal Description", height=100)
@@ -198,6 +205,7 @@ if st.session_state.step == 5:
             prev_step()
     with cols[1]:
         if st.button("Next →"):
+            # save to session
             st.session_state.OwnerName = OwnerName
             st.session_state.ProjectAddress = ProjectAddress
             st.session_state.CustomerName = CustomerName
@@ -211,9 +219,9 @@ if st.session_state.step == 5:
             next_step()
 
 # ---------------------
-# Step 6: Generate & Download
+# Step 7: Generate & Download
 # ---------------------
-if st.session_state.step == 6:
+if st.session_state.step == 7:
     st.header("Lienify — Lien & Waiver Form Generator")
     st.write("Your form will be generated based on the details you provided.")
     
@@ -231,8 +239,6 @@ if st.session_state.step == 6:
         if template_path and st.button("Generate & Download"):
             with st.spinner("Please wait, your form is being generated..."):
                 doc = Document(template_path)
-                
-                # Manual replacement
                 replacements = {
                     "Project: _____________________________": f"Project: {st.session_state.ProjectAddress}",
                     "Job No: _____________________________": f"Job No: {st.session_state.JobNumber}",
@@ -243,17 +249,13 @@ if st.session_state.step == 6:
                     "[Job Description]": st.session_state.PropertyDescription,
                     "[Person with whom undersigned contracted]": st.session_state.CustomerName
                 }
-                
                 for p in doc.paragraphs:
                     for key, val in replacements.items():
                         if key in p.text:
                             p.text = p.text.replace(key, val)
-                
-                # Save to temp file
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
                     tmp_path = tmp.name
                     doc.save(tmp_path)
-                
                 display_name = f"Lienify_AZ_{ptype}_{'Conditional' if cond=='Yes' else 'Unconditional'}_{datetime.today().strftime('%Y%m%d')}.docx"
                 with open(tmp_path, "rb") as f:
                     st.download_button("Download Filled Waiver (.docx)", data=f, file_name=display_name, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
