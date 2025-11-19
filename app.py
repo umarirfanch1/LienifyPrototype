@@ -1,118 +1,101 @@
 import streamlit as st
 from docx import Document
-from io import BytesIO
+import pandas as pd
+import os
+import zipfile
 
-st.set_page_config(page_title="Lienify Arizona Waiver Generator", layout="wide")
-st.title("Lineify - Arizona Lien Waiver Generator")
+st.title("Lineify – Arizona Lien Waiver Automation")
 
-# -------------------------
-# Step 0: Pre-Screening
-# -------------------------
-st.header("Step 0: Pre-Screening")
+# ------------------------------
+# 1. Unzip templates if needed
+# ------------------------------
+zip_path = "templates.zip"  # your uploaded zip
+extract_path = "templates"
 
-is_arizona = st.radio(
-    "Are you working on a construction project in Arizona?",
-    ("Yes", "No")
-)
+if not os.path.exists(extract_path):
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(extract_path)
 
-if is_arizona == "No":
-    st.warning("Arizona statutory lien waivers are only valid for Arizona projects.")
-    st.stop()
+template_folder = os.path.join(extract_path, "02_Templates/Arizona/")
 
-role = st.selectbox(
-    "Your role on this project",
-    ["Contractor", "Subcontractor", "Supplier", "Material Provider"]
-)
-
-payment_type = st.radio("Is this waiver for a Progress or Final payment?", ("Progress", "Final"))
-
-payment_received = st.radio("Has payment been received yet for this waiver?", ("Yes", "No"))
-
-# Determine conditional vs unconditional
-conditional_on_payment = "No" if payment_received == "Yes" else "Yes"
-
-# -------------------------
-# Step 1: Detailed Data Collection
-# -------------------------
-st.header("Step 1: Detailed Data Collection")
-
-owner_name = st.text_input("Property Owner Name ({{OwnerName}})")
-project_address = st.text_input("Property / Job Address ({{ProjectAddress}})")
-customer_name = st.text_input("Customer / Paying Entity Name ({{CustomerName}})")
-lienor_name = st.text_input("Lienor / Contractor Name ({{LienorName}})")
-payment_amount = st.text_input("Payment Amount ({{PaymentAmount}})")
-work_through_date = st.text_input("Work Through Date (for Progress Payment) ({{WorkThroughDate}})")
-job_number = st.text_input("Job / Project Number ({{JobNumber}})")
-property_description = st.text_input("Description of Property / Job ({{PropertyDescription}})")
-execution_date = st.text_input("Date of Waiver Execution ({{ExecutionDate}})")
-authorized_rep = st.text_input("Authorized Representative / Signatory ({{AuthorizedRep}})")
-
-# Validation
-if payment_type == "Progress" and not work_through_date:
-    st.warning("Work Through Date is required for Progress Payments.")
-    st.stop()
-
-# -------------------------
-# Step 2: Select Template
-# -------------------------
-st.header("Step 2: Generate Waiver")
-
-template_folder = "templates/Arizona/"
-
-# Mapping
+# ------------------------------
+# 2. Template mapping
+# ------------------------------
 template_map = {
-    ("Progress", "Yes"): "CONDITIONAL WAIVER AND RELEASE ON PROGRESS PAYMENT.pdf",
-    ("Progress", "No"): "UNCONDITIONAL WAIVER AND RELEASE ON PROGRESS PAYMENT.pdf",
-    ("Final", "Yes"): "CONDITIONAL WAIVER AND RELEASE ON FINAL PAYMENT.pdf",
-    ("Final", "No"): "UNCONDITIONAL WAIVER AND RELEASE ON FINAL PAYMENT.pdf",
+    ("Progress", "Conditional"): "CONDITIONAL WAIVER AND RELEASE ON PROGRESS PAYMENT.pdf",
+    ("Progress", "Unconditional"): "UNCONDITIONAL WAIVER AND RELEASE ON PROGRESS PAYMENT.pdf",
+    ("Final", "Conditional"): "CONDITIONAL WAIVER AND RELEASE ON FINAL PAYMENT.pdf",
+    ("Final", "Unconditional"): "UNCONDITIONAL WAIVER AND RELEASE ON FINAL PAYMENT.pdf"
 }
 
-selected_template = template_map[(payment_type, conditional_on_payment)]
+# ------------------------------
+# 3. Collect user input
+# ------------------------------
+st.header("Step 0: Pre-Data Collection")
 
-# -------------------------
-# Step 3: Merge Placeholders
-# -------------------------
-def fill_docx_template(template_path, placeholders):
+payment_type = st.radio("Is this waiver for a progress payment or a final payment?", ["Progress", "Final"])
+payment_received = st.radio("Has payment been received yet for this waiver?", ["Yes", "No"])
+
+conditional_on_payment = "No" if payment_received == "Yes" else "Yes"
+
+st.header("Step 1: Detailed Data Collection")
+OwnerName = st.text_input("Property Owner Name", "")
+ProjectAddress = st.text_input("Property / Job Address", "")
+CustomerName = st.text_input("Customer / Paying Entity Name", "")
+LienorName = st.text_input("Lienor / Contractor Name", "")
+PaymentAmount = st.text_input("Payment Amount", "")
+WorkThroughDate = st.text_input("Work Through Date (for progress waiver)", "")
+JobNumber = st.text_input("Job / Project Number", "")
+PropertyDescription = st.text_input("Description of Property / Job", "")
+ExecutionDate = st.text_input("Date of waiver execution", "")
+AuthorizedRep = st.text_input("Authorized Representative / Signatory", "")
+
+# ------------------------------
+# 4. Fill the template
+# ------------------------------
+def fill_word_template(template_path, placeholders):
     doc = Document(template_path)
-    for paragraph in doc.paragraphs:
-        for key, value in placeholders.items():
-            if key in paragraph.text:
-                paragraph.text = paragraph.text.replace(key, value)
+    for p in doc.paragraphs:
+        for key, val in placeholders.items():
+            if key in p.text:
+                p.text = p.text.replace(key, str(val))
     # Also replace in tables if needed
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
-                for key, value in placeholders.items():
+                for key, val in placeholders.items():
                     if key in cell.text:
-                        cell.text = cell.text.replace(key, value)
+                        cell.text = cell.text.replace(key, str(val))
     return doc
 
-placeholders = {
-    "{{OwnerName}}": owner_name,
-    "{{ProjectAddress}}": project_address,
-    "{{CustomerName}}": customer_name,
-    "{{LienorName}}": lienor_name,
-    "{{PaymentAmount}}": payment_amount,
-    "{{WorkThroughDate}}": work_through_date,
-    "{{JobNumber}}": job_number,
-    "{{PropertyDescription}}": property_description,
-    "{{ExecutionDate}}": execution_date,
-    "{{AuthorizedRep}}": authorized_rep,
-    "{{ConditionalOnPayment}}": conditional_on_payment
-}
+# ------------------------------
+# 5. Generate filled waiver
+# ------------------------------
+if st.button("Generate Waiver"):
+    if not OwnerName or not ProjectAddress or not CustomerName or not LienorName or not PaymentAmount:
+        st.error("Please fill in all required fields.")
+    else:
+        selected_template = template_map[(payment_type, "Conditional" if conditional_on_payment=="Yes" else "Unconditional")]
+        template_path = os.path.join(template_folder, selected_template)
+        
+        placeholders = {
+            "{{OwnerName}}": OwnerName,
+            "{{ProjectAddress}}": ProjectAddress,
+            "{{CustomerName}}": CustomerName,
+            "{{LienorName}}": LienorName,
+            "{{PaymentAmount}}": PaymentAmount,
+            "{{WorkThroughDate}}": WorkThroughDate,
+            "{{ExecutionDate}}": ExecutionDate,
+            "{{AuthorizedRep}}": AuthorizedRep,
+            "{{JobNumber}}": JobNumber,
+            "{{PropertyDescription}}": PropertyDescription,
+            "{{ConditionalOnPayment}}": conditional_on_payment
+        }
 
-template_path = template_folder + selected_template
-filled_doc = fill_docx_template(template_path, placeholders)
-
-# Save in memory
-output_stream = BytesIO()
-filled_doc.save(output_stream)
-output_stream.seek(0)
-
-st.success(f"Template Selected: {selected_template}")
-st.download_button(
-    label="Download Filled Waiver",
-    data=output_stream,
-    file_name=selected_template,
-    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-)
+        filled_doc = fill_word_template(template_path, placeholders)
+        
+        output_file = f"AZ_{'Conditional' if conditional_on_payment=='Yes' else 'Unconditional'}_{payment_type}_{ExecutionDate.replace('/', '-')}.docx"
+        filled_doc.save(output_file)
+        
+        st.success("Waiver generated successfully!")
+        st.download_button("Download Waiver", open(output_file, "rb"), file_name=output_file)
