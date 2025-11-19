@@ -310,14 +310,18 @@ def step_download():
 def extract_template_from_zip(zip_path: str, template_relpath: str, extract_to: str):
     template_basename = Path(template_relpath).name
     with ZipFile(zip_path, "r") as z:
-        # find any file in zip that ends with the template filename
+        # Find any file in zip whose basename matches template_basename (ignore folder and case)
         matched_file = None
         for name in z.namelist():
-            if Path(name).name == template_basename:
+            if Path(name).name.lower() == template_basename.lower():
                 matched_file = name
                 break
         if matched_file is None:
-            raise FileNotFoundError(f"Could not find template {template_relpath} in {zip_path}")
+            # Debug: list all files inside zip
+            all_files = "\n".join(z.namelist())
+            raise FileNotFoundError(
+                f"Could not find template {template_basename} in {zip_path}. Files in zip:\n{all_files}"
+            )
         z.extract(matched_file, path=extract_to)
         return Path(extract_to) / matched_file
 
