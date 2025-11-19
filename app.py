@@ -129,7 +129,7 @@ def step_navigation(can_go_next=True):
     st.write("")
     st.markdown("---")
 
-# ---------- Step Implementations ----------
+# ---------- Steps ----------
 def step_welcome():
     st.header("Welcome to Lienify Waiver and Lien Form Generator")
     st.caption("A simple step-by-step generator for Arizona waiver & release forms.")
@@ -179,7 +179,181 @@ def step_compliance():
         st.rerun()
     step_navigation(can_go_next=st.session_state.compliance_ack)
 
-# ... (rest of the steps remain same, just replace st.experimental_rerun() → st.rerun() wherever present)
+def step_prescreen_role():
+    st.header("Pre-screening — Role")
+    st.caption("Select the role you have in this transaction (required).")
+    role = st.selectbox("Your role", options=["", "Owner", "Contractor", "Subcontractor", "Supplier", "Other"], key="role_select_1")
+    st.session_state.role = role
+    if role == "":
+        st.warning("Please select your role to proceed.")
+        step_navigation(can_go_next=False)
+    else:
+        step_navigation(can_go_next=True)
+
+def step_prescreen_payment_type():
+    st.header("Pre-screening — Payment Type")
+    st.caption("Is this a Progress payment or a Final payment? (required)")
+    payment_type = st.radio("Payment Type", options=["Progress", "Final"], key="payment_type_radio_1")
+    st.session_state.payment_type = payment_type
+    st.write("")
+    st.caption("Progress = partial / interim payment. Final = final release on project completion.")
+    step_navigation(can_go_next=True)
+
+def step_prescreen_payment_received():
+    st.header("Pre-screening — Payment Received")
+    st.caption("Has the payment been received? (required)")
+    received = st.radio("Payment Received?", options=["Yes", "No"], key="payment_received_radio_1")
+    st.session_state.payment_received = received
+    if received == "Yes":
+        st.success("Marking as received — this will select an Unconditional release template.")
+    else:
+        st.info("Marked as not received — this will select a Conditional release template.")
+    step_navigation(can_go_next=True)
+
+def step_prescreen_first_delivery():
+    st.header("Pre-screening — First Delivery Date")
+    st.caption("Enter the first date when materials or labor were delivered (required).")
+    first_date = st.date_input("First delivery date", key="first_delivery_date_input")
+    st.session_state.first_delivery_date = first_date
+    step_navigation(can_go_next=True)
+
+def step_project_payment_details():
+    st.header("Project & Payment Details")
+    st.caption("All fields required. Use calendar widgets for dates. Format amounts in numbers; $ will be added automatically.")
+    st.write("")
+    st.text_input("Project name", key="project_name_input", placeholder="e.g., Highway Renovation #12")
+    st.session_state.project_name = st.session_state.get("project_name_input")
+    st.text_input("Project address", key="project_address_input")
+    st.session_state.project_address = st.session_state.get("project_address_input")
+    st.text_input("Owner name", key="owner_name_input")
+    st.session_state.owner_name = st.session_state.get("owner_name_input")
+    st.text_input("Contractor name", key="contractor_name_input")
+    st.session_state.contractor_name = st.session_state.get("contractor_name_input")
+    st.text_input("Invoice number", key="invoice_number_input")
+    st.session_state.invoice_number = st.session_state.get("invoice_number_input")
+    st.text_input("Payment amount (numbers only)", key="payment_amount_input")
+    st.session_state.payment_amount_raw = st.session_state.get("payment_amount_input")
+    st.date_input("Job start date", key="job_start_date_input")
+    st.session_state.job_start_date = st.session_state.get("job_start_date_input")
+    st.date_input("Job end date", key="job_end_date_input")
+    st.session_state.job_end_date = st.session_state.get("job_end_date_input")
+    st.text_area("Brief job description", key="job_description_input", height=120)
+    st.session_state.job_description = st.session_state.get("job_description_input")
+    required_fields = [
+        st.session_state.project_name,
+        st.session_state.project_address,
+        st.session_state.owner_name,
+        st.session_state.contractor_name,
+        st.session_state.invoice_number,
+        st.session_state.payment_amount_raw,
+        st.session_state.job_start_date,
+        st.session_state.job_end_date,
+        st.session_state.job_description,
+    ]
+    all_filled = all([bool(f) for f in required_fields])
+    if not all_filled:
+        st.warning("Please complete all required project and payment details before proceeding.")
+    step_navigation(can_go_next=all_filled)
+
+def step_review_and_generate():
+    st.header("Review — Confirm details before generating")
+    st.caption("Review all details below. Click Generate to create the Word document.")
+    st.markdown("---")
+    st.subheader("Project")
+    st.write(f"**Project name:** {st.session_state.project_name}")
+    st.write(f"**Project address:** {st.session_state.project_address}")
+    st.write(f"**Job description:** {st.session_state.job_description}")
+    st.subheader("Parties & References")
+    st.write(f"**Owner:** {st.session_state.owner_name}")
+    st.write(f"**Contractor / Claimant:** {st.session_state.contractor_name}")
+    st.write(f"**Invoice / Ref No.:** {st.session_state.invoice_number}")
+    st.subheader("Payment")
+    st.write(f"**Payment type:** {st.session_state.payment_type}")
+    st.write(f"**Payment received:** {st.session_state.payment_received}")
+    st.write(f"**Amount:** {currency_format(st.session_state.payment_amount_raw)}")
+    st.subheader("Dates")
+    st.write(f"**First delivery:** {st.session_state.first_delivery_date.strftime('%B %d, %Y') if st.session_state.first_delivery_date else ''}")
+    st.write(f"**Job start:** {st.session_state.job_start_date.strftime('%B %d, %Y') if st.session_state.job_start_date else ''}")
+    st.write(f"**Job end:** {st.session_state.job_end_date.strftime('%B %d, %Y') if st.session_state.job_end_date else ''}")
+    st.markdown("---")
+    st.info("If any detail is incorrect, use Back to edit. All fields are required.")
+    if st.button("Generate document", key="generate_doc_btn"):
+        with st.spinner("Please wait, your form is being generated..."):
+            try:
+                doc_bytes, filename = generate_document()
+                st.session_state.generated_file_bytes = doc_bytes
+                st.session_state.generated_filename = filename
+                st.success("Document generated successfully.")
+                st.session_state.step += 1
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to generate document: {e}")
+    step_navigation(can_go_next=True)
+
+def step_download():
+    st.header("Done — Download your populated form")
+    st.caption("Click the button below to download the generated document.")
+    if st.session_state.generated_file_bytes and st.session_state.generated_filename:
+        st.download_button(
+            label="Download populated document",
+            data=st.session_state.generated_file_bytes,
+            file_name=st.session_state.generated_filename,
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            key="download_populated_doc"
+        )
+        st.success("If needed, change inputs and regenerate another copy.")
+    else:
+        st.warning("No generated file available. Go back and press Generate.")
+    step_navigation(can_go_next=False)
+
+# ---------- Document generation ----------
+def extract_template_from_zip(zip_path: str, template_relpath: str, extract_to: str):
+    with ZipFile(zip_path, "r") as z:
+        internal = None
+        for name in z.namelist():
+            if name.endswith(template_relpath):
+                internal = name
+                break
+        if internal is None:
+            filename_only = Path(template_relpath).name
+            for name in z.namelist():
+                if name.endswith(filename_only):
+                    internal = name
+                    break
+        if internal is None:
+            raise FileNotFoundError(f"Could not find template {template_relpath} in {zip_path}")
+        z.extract(internal, path=extract_to)
+        return Path(extract_to) / internal
+
+def generate_document():
+    payment_type = st.session_state.payment_type
+    received = st.session_state.payment_received
+    unconditional = True if received == "Yes" else False
+    key = (payment_type, unconditional)
+    if key not in TEMPLATE_FILENAME_MAP:
+        raise ValueError("Template mapping not found for your selection.")
+    template_filename = TEMPLATE_FILENAME_MAP[key]
+    template_relpath = f"{ARIZONA_FOLDER_NAME}/{template_filename}"
+    tmpdir = tempfile.mkdtemp()
+    try:
+        extracted = extract_template_from_zip(TEMPLATES_ZIP_PATH, template_relpath, tmpdir)
+        doc = Document(str(extracted))
+        replacements = build_replacement_map()
+        replace_docx_placeholders(doc, replacements)
+        fbytes = BytesIO()
+        doc.save(fbytes)
+        fbytes.seek(0)
+        conditional_text = "Unconditional" if unconditional else "Conditional"
+        date_part = datetime.now().strftime("%Y%m%d")
+        progressive_text = payment_type
+        out_filename = f"Lienify_AZ_{progressive_text}_{conditional_text}_{date_part}.docx"
+        out_filename = safe_filename(out_filename)
+        return fbytes.getvalue(), out_filename
+    finally:
+        try:
+            shutil.rmtree(tmpdir)
+        except:
+            pass
 
 # ---------- Main App ----------
 def main():
