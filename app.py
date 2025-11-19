@@ -308,22 +308,18 @@ def step_download():
 
 # ---------- Document generation ----------
 def extract_template_from_zip(zip_path: str, template_relpath: str, extract_to: str):
+    template_basename = Path(template_relpath).name
     with ZipFile(zip_path, "r") as z:
-        internal = None
+        # find any file in zip that ends with the template filename
+        matched_file = None
         for name in z.namelist():
-            if name.endswith(template_relpath):
-                internal = name
+            if Path(name).name == template_basename:
+                matched_file = name
                 break
-        if internal is None:
-            filename_only = Path(template_relpath).name
-            for name in z.namelist():
-                if name.endswith(filename_only):
-                    internal = name
-                    break
-        if internal is None:
+        if matched_file is None:
             raise FileNotFoundError(f"Could not find template {template_relpath} in {zip_path}")
-        z.extract(internal, path=extract_to)
-        return Path(extract_to) / internal
+        z.extract(matched_file, path=extract_to)
+        return Path(extract_to) / matched_file
 
 def generate_document():
     payment_type = st.session_state.payment_type
