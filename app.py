@@ -1,114 +1,193 @@
 import streamlit as st
 import zipfile
 import os
+import tempfile
 from docx import Document
-from datetime import datetime
 
-st.set_page_config(page_title="Lineify - Arizona Lien Waiver Automation")
+# ---------------------------------------------------------
+# PAGE TITLE + HEADER
+# ---------------------------------------------------------
+st.set_page_config(page_title="Lienify - Arizona Lien Waiver Automation", layout="wide")
 
-st.title("Lineify Arizona Lien Waiver Automation")
-st.write("Select your state, fill out the form, and generate the correct lien waiver document.")
+st.markdown("""
+# **Lienify – Arizona Lien Waiver Automation**  
+### *Prototype by Muhammad Umar Irfan*
+---
+""")
 
-# --- Step 0: Extract Templates from ZIP ---
-zip_path = "02_Templates-20251119T041237Z-1-001.zip"
-extract_folder = "02_Templates"
+# ---------------------------------------------------------
+# UNZIP THE TEMPLATE FOLDER AUTOMATICALLY
+# ---------------------------------------------------------
+ZIP_FILE_NAME = "02_Templates-20251119T041237Z-1-001.zip"
 
-if not os.path.exists(extract_folder):
-    if os.path.exists(zip_path):
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(extract_folder)
-    else:
-        st.error(f"ZIP file not found: {zip_path}")
-        st.stop()
+if not os.path.exists(ZIP_FILE_NAME):
+    st.error(f"Template ZIP file not found: {ZIP_FILE_NAME}")
+    st.stop()
 
-# --- Step 1: Pre-Data Collection Form ---
-st.header("Pre-Data Collection Form - Arizona")
+# Extract zip to temporary working dir
+temp_dir = tempfile.mkdtemp()
 
-# Step 0: Client Pre-Screening
-state_project = st.radio("Are you working on a construction project in Arizona?", ["Yes", "No"])
-if state_project == "No":
+with zipfile.ZipFile(ZIP_FILE_NAME, 'r') as zip_ref:
+    zip_ref.extractall(temp_dir)
+
+# Arizona folder path (auto-detect)
+AZ_FOLDER = None
+for root, dirs, files in os.walk(temp_dir):
+    if "Arizona" in root or "AZ" in root:
+        AZ_FOLDER = root
+        break
+
+if not AZ_FOLDER:
+    st.error("Could not locate Arizona template folder inside ZIP.")
+    st.stop()
+
+# ---------------------------------------------------------
+# LOCATE THE FOUR TEMPLATES (DOCX files named as .pdf)
+# ---------------------------------------------------------
+def find_template(name):
+    """
+    Because your files are DOCX but named .pdf,
+    we scan for files containing the name regardless of extension.
+    """
+    for file in os.listdir(AZ_FOLDER):
+        if name.replace(".docx", "").replace(".pdf", "").lower() in file.lower():
+            return os.path.join(AZ_FOLDER, file)
+    return None
+
+TEMPLATE_PROGRESS_CONDITIONAL = find_template("CONDITIONAL WAIVER AND RELEASE ON PROGRESS PAYMENT")
+TEMPLATE_PROGRESS_UNCONDITIONAL = find_template("UNCONDITIONAL WAIVER AND RELEASE ON PROGRESS PAYMENT")
+TEMPLATE_FINAL_CONDITIONAL = find_template("CONDITIONAL WAIVER AND RELEASE ON FINAL PAYMENT")
+TEMPLATE_FINAL_UNCONDITIONAL = find_template("UNCONDITIONAL WAIVER AND RELEASE ON FINAL PAYMENT")
+
+templates_map = {
+    "progress_yes": TEMPLATE_PROGRESS_CONDITIONAL,
+    "progress_no": TEMPLATE_PROGRESS_UNCONDITIONAL,
+    "final_yes": TEMPLATE_FINAL_CONDITIONAL,
+    "final_no": TEMPLATE_FINAL_UNCONDITIONAL,
+}
+
+# ---------------------------------------------------------
+# PRE–SCREENING UI (Matches Your Developer Logic Form)
+# ---------------------------------------------------------
+st.subheader("Arizona Project Pre-Screening")
+
+project_state = st.radio("Are you working on a construction project in Arizona?", ["Yes", "No"])
+
+if project_state == "No":
     st.warning("Arizona statutory lien waivers are only valid for Arizona projects.")
     st.stop()
 
-role = st.selectbox("What is your role on this project?", ["Contractor", "Subcontractor", "Supplier", "Material Provider"])
-payment_type = st.radio("Is this waiver for a progress payment or a final payment?", ["Progress", "Final"])
-payment_received = st.radio("Has payment been received yet for this waiver?", ["Yes", "No"])
+role = st.selectbox("Your role:", ["Contractor", "Subcontractor", "Supplier", "Material Provider"])
 
-# Step 1: Detailed Data Collection
-st.subheader("Detailed Project / Payment Info")
-OwnerName = st.text_input("Property Owner Name")
-ProjectAddress = st.text_input("Project Address")
+payment_type = st.radio("Is this for a progress payment or a final payment?", ["Progress", "Final"])
+
+payment_received = st.radio("Has payment been received?", ["Yes", "No"])
+
+# Determine template key
+key = payment_type.lower() + "_" + ("no" if payment_received == "Yes" else "yes")
+template_file = templates_map.get(key)
+
+if not template_file:
+    st.error("Template not found based on your selections.")
+    st.stop()
+
+st.success(f"Template selected: **{os.path.basename(template_file)}**")
+
+# ---------------------------------------------------------
+# DETAILED DATA COLLECTION
+# ---------------------------------------------------------
+st.subheader("Detailed Waiver Information")
+
+OwnerName = st.text_input("Owner Name")
+ProjectAddress = st.text_input("Property / Job Address")
 CustomerName = st.text_input("Customer / Paying Entity Name")
-LienorName = st.text_input("Lienor / Contractor Name")
-PaymentAmount = st.number_input("Payment Amount", min_value=0.0, format="%.2f")
-WorkThroughDate = st.date_input("Work Through Date (required for progress waiver)") if payment_type == "Progress" else None
-ExecutionDate = st.date_input("Execution Date", value=datetime.today())
-AuthorizedRep = st.text_input("Authorized Representative / Signatory")
-JobNumber = st.text_input("Project / Job Number")
-PropertyDescription = st.text_area("Description of Property / Job")
+LienorName = st.text_input("Lienor / Contractor / Provider Name")
 
-# Determine conditional/unconditional
+# Dollar sign added automatically
+PaymentAmount = st.text_input("Payment Amount", placeholder="$25,000.00")
+
+WorkThroughDate = None
+if payment_type == "Progress":
+    WorkThroughDate = st.text_input("Work Through Date (Progress Waiver Only)", placeholder="November 1, 2025")
+
+JobNumber = st.text_input("Project Job Number")
+PropertyDescription = st.text_area("Property / Job Description", height=80)
+
 ConditionalOnPayment = "No" if payment_received == "Yes" else "Yes"
 
-# Validation
-if PaymentAmount <= 0:
-    st.error("Payment amount must be greater than 0.")
-    st.stop()
+ExecutionDate = st.text_input("Execution Date", placeholder="Nov 7, 2025")
+AuthorizedRep = st.text_input("Authorized Representative / Signatory Name")
 
-if payment_type == "Final" and WorkThroughDate and WorkThroughDate > ExecutionDate:
-    st.error("For final payment, Work Through Date cannot be after Execution Date.")
-    st.stop()
+# Arizona-specific compliance note (required per your sheet)
+st.info("""
+### Arizona Compliance Reminder  
+• Preliminary Notice must be sent **within 20 days of first delivery**  
+• Unconditional waivers become binding *when signed*  
+• Conditional waivers become binding *when payment evidence exists*  
+• Waiving lien rights before performing work is illegal  
+""")
 
-# --- Step 2: Select Correct Template ---
-template_folder = os.path.join(extract_folder, "Arizona")
-template_map = {
-    ("Progress", "Yes"): "CONDITIONAL WAIVER AND RELEASE ON PROGRESS PAYMENT.docx",
-    ("Progress", "No"): "UNCONDITIONAL WAIVER AND RELEASE ON PROGRESS PAYMENT.docx",
-    ("Final", "Yes"): "CONDITIONAL WAIVER AND RELEASE ON FINAL PAYMENT.docx",
-    ("Final", "No"): "UNCONDITIONAL WAIVER AND RELEASE ON FINAL PAYMENT.docx",
-}
+# ---------------------------------------------------------
+# GENERATE DOCUMENT
+# ---------------------------------------------------------
+def replace_tags(doc, mapping):
+    """Replace {{tags}} in a .docx document."""
+    for paragraph in doc.paragraphs:
+        for key, val in mapping.items():
+            if key in paragraph.text:
+                paragraph.text = paragraph.text.replace(key, val)
 
-selected_template = template_map[(payment_type, ConditionalOnPayment)]
-template_path = os.path.join(template_folder, selected_template)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for key, val in mapping.items():
+                    if key in cell.text:
+                        cell.text = cell.text.replace(key, val)
 
-if not os.path.exists(template_path):
-    st.error(f"Template not found: {selected_template}")
-    st.stop()
+st.subheader("Generate Arizona Lien Waiver")
 
-# --- Step 3: Fill Template ---
-def fill_template(doc_path, placeholders):
-    doc = Document(doc_path)
-    for p in doc.paragraphs:
-        for key, value in placeholders.items():
-            if key in p.text:
-                p.text = p.text.replace(key, value)
-    return doc
+if st.button("Generate Document"):
+    if not os.path.exists(template_file):
+        st.error("Template file missing.")
+        st.stop()
 
-placeholders = {
-    "{{OwnerName}}": OwnerName,
-    "{{ProjectAddress}}": ProjectAddress,
-    "{{CustomerName}}": CustomerName,
-    "{{LienorName}}": LienorName,
-    "{{PaymentAmount}}": f"${PaymentAmount:,.2f}",
-    "{{WorkThroughDate}}": WorkThroughDate.strftime("%B %d, %Y") if WorkThroughDate else "",
-    "{{ExecutionDate}}": ExecutionDate.strftime("%B %d, %Y"),
-    "{{AuthorizedRep}}": AuthorizedRep,
-    "{{JobNumber}}": JobNumber,
-    "{{PropertyDescription}}": PropertyDescription,
-    "{{ConditionalOnPayment}}": ConditionalOnPayment
-}
+    # Load DOCX template (even though named .pdf)
+    doc = Document(template_file)
 
-filled_doc = fill_template(template_path, placeholders)
+    data_map = {
+        "{{OwnerName}}": OwnerName,
+        "{{ProjectAddress}}": ProjectAddress,
+        "{{CustomerName}}": CustomerName,
+        "{{LienorName}}": LienorName,
+        "{{PaymentAmount}}": PaymentAmount,
+        "{{WorkThroughDate}}": WorkThroughDate or "",
+        "{{JobNumber}}": JobNumber,
+        "{{PropertyDescription}}": PropertyDescription,
+        "{{ConditionalOnPayment}}": ConditionalOnPayment,
+        "{{ExecutionDate}}": ExecutionDate,
+        "{{AuthorizedRep}}": AuthorizedRep,
+    }
 
-# --- Step 4: Save & Download ---
-output_filename = f"AZ_{'Conditional' if ConditionalOnPayment=='Yes' else 'Unconditional'}_{payment_type}_{datetime.today().strftime('%Y%m%d')}.docx"
-filled_doc.save(output_filename)
+    replace_tags(doc, data_map)
 
-st.success(f"Document generated: {output_filename}")
-with open(output_filename, "rb") as f:
-    st.download_button(
-        label="Download Lien Waiver",
-        data=f,
-        file_name=output_filename,
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    )
+    # Save output
+    output_path = os.path.join(temp_dir, f"Lienify_{payment_type}_{ConditionalOnPayment}.docx")
+    doc.save(output_path)
+
+    st.success("Arizona lien waiver generated successfully!")
+
+    with open(output_path, "rb") as f:
+        st.download_button(
+            label="Download Completed Lien Waiver",
+            data=f,
+            file_name=os.path.basename(output_path),
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+
+# ---------------------------------------------------------
+# FOOTER
+# ---------------------------------------------------------
+st.markdown("""
+---
+#### © Lienify — Prototype by **Muhammad Umar Irfan**
+""")
