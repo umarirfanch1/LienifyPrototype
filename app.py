@@ -1,141 +1,159 @@
-# app.py - Lienify Arizona Lien & Waiver Form Generator (Streamlit)
+# app.py - Lienify (Streamlit) - Optimized, lazy template load and single-question flow
 import streamlit as st
-import zipfile, os, tempfile
 from docx import Document
 from datetime import datetime, timedelta
-import re
+import zipfile
+import tempfile
+import os
+import io
 
 st.set_page_config(page_title="Lienify - Arizona Lien Waiver Generator", layout="centered")
 
-# -------------------------
-# Config: ZIP name and extraction base
-# -------------------------
-ZIP_NAME = "02_Templates-20251119T041237Z-1-001.zip"  # update if different
-EXTRACT_BASE = "02_Templates_extracted"
+# -----------------------
+# Configuration
+# -----------------------
+ZIP_NAME = "02_Templates-20251119T041237Z-1-001.zip"  # update if needed
+STATES = ["Arizona","California","Nevada","Texas","Florida","Georgia","Washington","Oregon","Colorado","Utah","New Mexico","Idaho"]
 
-# -------------------------
-# Helpers: template handling
-# -------------------------
-def ensure_templates():
-    if not os.path.exists(EXTRACT_BASE):
-        if not os.path.exists(ZIP_NAME):
-            st.error(f"Template ZIP not found in repo: {ZIP_NAME}")
-            st.stop()
-        os.makedirs(EXTRACT_BASE, exist_ok=True)
-        with zipfile.ZipFile(ZIP_NAME, 'r') as z:
-            z.extractall(EXTRACT_BASE)
-
-    # find Arizona folder path
-    for root, dirs, files in os.walk(EXTRACT_BASE):
-        lower = root.lower()
-        if os.path.basename(root).lower() == "arizona" or "arizona" in lower:
-            return root
-    return None
-
-AZ_FOLDER = ensure_templates()
-if not AZ_FOLDER:
-    st.error("Arizona template folder not found inside ZIP. Make sure 'Arizona' folder exists in the uploaded ZIP.")
-    st.stop()
-
+# Map logical selection -> filename base (note: actual files are .docx inside the zip,
+# but your filenames in templates were named with .pdf; we match on base text)
 TEMPLATE_MAP = {
     ("Progress", "Yes"): "CONDITIONAL WAIVER AND RELEASE ON PROGRESS PAYMENT.pdf",
-    ("Progress", "No"):  "UNCONDITIONAL WAIVER AND RELEASE ON PROGRESS PAYMENT.pdf",
-    ("Final", "Yes"):    "CONDITIONAL WAIVER AND RELEASE ON FINAL PAYMENT.pdf",
-    ("Final", "No"):     "UNCONDITIONAL WAIVER AND RELEASE ON FINAL PAYMENT.pdf",
+    ("Progress", "No"): "UNCONDITIONAL WAIVER AND RELEASE ON PROGRESS PAYMENT.pdf",
+    ("Final", "Yes"): "CONDITIONAL WAIVER AND RELEASE ON FINAL PAYMENT.pdf",
+    ("Final", "No"): "UNCONDITIONAL WAIVER AND RELEASE ON FINAL PAYMENT.pdf",
 }
 
-def find_template_file(expected_name):
-    basename = expected_name.replace(".pdf","").lower()
-    for f in os.listdir(AZ_FOLDER):
-        if basename in f.lower():
-            return os.path.join(AZ_FOLDER, f)
-    return None
+# -----------------------
+# Utility helpers (no heavy IO during UI)
+# -----------------------
+def human_date(d):
+    return d.strftime("%B %d, %Y") if d else ""
 
-def try_open_docx(path):
-    """
-    Try to open a path as a docx Document. If path ends with .pdf but actually
-    there's a .docx with same base name, try that. Return Document or raise.
-    """
-    try:
-        return Document(path)
-    except Exception:
-        # try swap extension to .docx
-        base, ext = os.path.splitext(path)
-        alt = base + ".docx"
-        if os.path.exists(alt):
-            return Document(alt)
-        raise
-
-def replace_all(doc_obj, mp):
-    for p in doc_obj.paragraphs:
-        for k,v in mp.items():
-            if k in p.text:
-                p.text = p.text.replace(k, v)
-    for t in doc_obj.tables:
-        for row in t.rows:
-            for cell in row.cells:
-                for k,v in mp.items():
-                    if k in cell.text:
-                        cell.text = cell.text.replace(k, v)
-
-# -------------------------
-# Session state initialization
-# -------------------------
-if "step" not in st.session_state:
-    st.session_state.step = 0
-if "show_state_select" not in st.session_state:
-    st.session_state.show_state_select = False
-
-# helpful navigation
-def go_next():
-    st.session_state.step += 1
-
-def go_back():
-    st.session_state.step = max(0, st.session_state.step - 1)
-
-# UX header displayed after welcome
-def render_header():
-    st.markdown("# Lienify — Lien and Waiver form generator")
-    st.markdown("Please fill out required form *")
-
-# small helper to parse "$" amount input like "$1,234.56"
 def parse_currency_input(s):
-    if s is None:
+    if not s:
         return None
-    s = s.strip()
-    if s == "":
-        return None
-    s = s.replace("$", "").replace(",", "")
+    s = s.strip().replace("$", "").replace(",", "")
     try:
-        return float(s)
+        v = float(s)
+        return "${:,.2f}".format(v)
     except:
         return None
 
-# -------------------------
-# Step 0: Welcome + "Select your state" button
-# -------------------------
+def find_template_in_zip(zip_path, expected_name_base, state_folder="arizona"):
+    """
+    Search inside the ZIP for a file whose filename contains expected_name_base (case-insensitive)
+    under the state_folder. Return the zip internal name (path) if found, else None.
+    """
+    expected_base = expected_name_base.replace(".pdf", "").lower()
+    with zipfile.ZipFile(zip_path, "r") as z:
+        for fn in z.namelist():
+            low = fn.lower()
+            # ensure it is within the state folder
+            if state_folder.lower() in low and expected_base in os.path.basename(low):
+                return fn
+    return None
+
+def read_template_bytes_from_zip(zip_path, internal_name):
+    with zipfile.ZipFile(zip_path, "r") as z:
+        return z.read(internal_name)
+
+def try_open_docx_from_bytes(bts):
+    """
+    Save bytes to temp .docx and open with python-docx Document
+    """
+    tf = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
+    try:
+        tf.write(bts)
+        tf.flush()
+        tf.close()
+        doc = Document(tf.name)
+    finally:
+        try:
+            os.unlink(tf.name)  # remove temporary file after Document loaded (Document reads into memory)
+        except Exception:
+            pass
+    return doc
+
+def replace_placeholders_in_doc(doc, mapping):
+    # Replace paragraphs
+    for p in doc.paragraphs:
+        for k, v in mapping.items():
+            if k in p.text:
+                p.text = p.text.replace(k, v)
+    # Replace inside tables
+    for t in doc.tables:
+        for row in t.rows:
+            for cell in row.cells:
+                for k, v in mapping.items():
+                    if k in cell.text:
+                        cell.text = cell.text.replace(k, v)
+
+# -----------------------
+# Session state init
+# -----------------------
+if "step" not in st.session_state:
+    st.session_state.step = 0
+# flags to prevent repeated auto-advances
+for name in ["role_done","payment_type_done","payment_received_done","first_delivery_done","work_through_done"]:
+    if name not in st.session_state:
+        st.session_state[name] = False
+
+# store field values (start empty if not set)
+for key in ["state","role","payment_type","payment_received","first_delivery","work_through_date",
+            "OwnerName","ProjectAddress","CustomerName","LienorName","LicenseNumber",
+            "PaymentAmount","ExecutionDate","JobNumber","PropertyDescription"]:
+    if key not in st.session_state:
+        st.session_state[key] = None
+
+# -----------------------
+# Small UI helpers
+# -----------------------
+def render_app_header():
+    st.markdown("# Lienify — Lien and Waiver form generator")
+    st.markdown("Please fill out required form *")
+
+def nav_buttons(can_back=True, back_target=None, next_label="Next →"):
+    cols = st.columns([1,1,1])
+    with cols[0]:
+        if can_back:
+            if st.button("Back"):
+                if back_target is None:
+                    st.session_state.step = max(0, st.session_state.step - 1)
+                else:
+                    st.session_state.step = back_target
+    with cols[2]:
+        # Next button will be handled per-page so we leave here for layout
+        pass
+
+# -----------------------
+# Step 0 - Welcome
+# -----------------------
 if st.session_state.step == 0:
     st.markdown("# Welcome to Lienify Waiver and Lien Form Generator")
     if st.button("Select your state"):
         st.session_state.show_state_select = True
 
-    if st.session_state.show_state_select:
-        STATES = ["Arizona","California","Nevada","Texas","Florida","Georgia","Washington","Oregon","Colorado","Utah","New Mexico","Idaho"]
-        state = st.selectbox("Choose state", [""] + STATES, key="state_select")
-        if state:
-            st.session_state.state = state
-            if state != "Arizona":
-                st.warning("Only Arizona is open for testing right now. Please select Arizona to continue.")
-            else:
-                # auto advance to compliance screen
-                st.success("Thanks for selecting Arizona. Proceeding...")
-                st.session_state.step = 1
+    if st.session_state.get("show_state_select", False):
+        st.selectbox("Choose state", [""] + STATES, key="state_selector")
+        # when state_selector gets set, we observe it below after rendering control
 
-# -------------------------
-# Step 1: Compliance screen (only once, after selecting AZ)
-# -------------------------
+    # if the user chose a state in session
+    chosen = st.session_state.get("state_selector", "")
+    if chosen:
+        st.session_state.state = chosen
+        if chosen != "Arizona":
+            st.warning("Only Arizona is open for testing right now. Please select Arizona to continue.")
+            # user can change selection; we don't advance
+        else:
+            # Auto advance when Arizona selected
+            st.session_state.step = 1
+
+# -----------------------
+# Step 1 - Arizona compliance (only shown once, after AZ selected)
+# -----------------------
 elif st.session_state.step == 1:
-    render_header()
+    render_app_header()
     st.markdown("**Thanks for selecting Arizona — have a look at compliance check before we proceed**")
     st.info("""
 **Arizona compliance summary (quick):**
@@ -146,242 +164,347 @@ elif st.session_state.step == 1:
 - Stop notices allowed on private projects (except owner-occupied dwellings).  
 - Payment bonds, tenant-as-agent, highway projects and UPL rules may affect lien eligibility.
 """)
-    if st.button("Yes, I understood. Please proceed"):
-        st.session_state.step = 2
+    cols = st.columns([1,1,1])
+    with cols[0]:
+        if st.button("Back"):
+            st.session_state.step = 0
+    with cols[2]:
+        if st.button("Yes, I understood. Please proceed"):
+            st.session_state.step = 2
 
-    if st.button("Back"):
-        go_back()
-
-# -------------------------
-# Steps 2..n : Single-question flow (one item per page, auto-advance)
-# We'll map steps to fields (order matters).
-# -------------------------
+# -----------------------
+# Steps 2.. : Single-question-per-page flow
+# We'll implement auto-advance on selection AND a Next button (disabled until value set).
+# -----------------------
 else:
-    # Define the ordered fields and which step number they map to.
-    # step 2 -> role, 3 -> payment_type, 4 -> payment_received, 5 -> first_delivery,
-    # 6 -> WorkThroughDate (if Progress), 7 -> OwnerName, 8 -> ProjectAddress, 9 -> CustomerName,
-    # 10 -> LienorName, 11 -> LicenseNumber, 12 -> PaymentAmount, 13 -> ExecutionDate,
-    # 14 -> JobNumber, 15 -> PropertyDescription, 16 -> Review & Generate
-    field_order = [
-        "role", "payment_type", "payment_received", "first_delivery",
-        "work_through_date", "OwnerName", "ProjectAddress", "CustomerName",
-        "LienorName", "LicenseNumber", "PaymentAmount", "ExecutionDate",
-        "JobNumber", "PropertyDescription"
-    ]
+    render_app_header()
 
-    # compute the index into field_order
-    idx = st.session_state.step - 2
-    # clamp
-    if idx < 0:
-        st.session_state.step = 2
-        idx = 0
-    if idx >= len(field_order):
-        # all done -> Review & Generate
-        st.session_state.step = 16
+    # Helper to show a Next button that increments only when clicked
+    def show_next(enabled=True, label="Next →"):
+        cols = st.columns([1,1,1])
+        with cols[2]:
+            if enabled:
+                if st.button(label):
+                    st.session_state.step += 1
+            else:
+                st.button(label, disabled=True)
 
-    # Render the header each page
-    render_header()
-
-    # helper to advance once a value is set
-    def set_and_next(key, value):
-        st.session_state[key] = value
-        # advance
-        st.session_state.step += 1
-
-    # field: role
+    # Page: Role
     if st.session_state.step == 2:
-        val = st.selectbox("Your role on this project (required)", ["", "Contractor","Subcontractor","Supplier","Material Provider"], key="role_input")
-        if val:
-            set_and_next("role", val)
+        st.markdown("### 1 of 13 — Your role on this project *")
+        role_val = st.selectbox("", ["", "Contractor","Subcontractor","Supplier","Material Provider"], key="role_widget")
+        # auto-advance once and only once
+        if role_val and not st.session_state.role_done:
+            st.session_state.role = role_val
+            st.session_state.role_done = True
+            st.session_state.step += 1
+        # show Next (disabled until selected)
+        show_next(enabled=bool(role_val))
         if st.button("Back"):
-            go_back()
+            st.session_state.step = 1
 
-    # payment_type
+    # Page: Payment Type
     elif st.session_state.step == 3:
-        val = st.radio("Is this waiver for a Progress or Final payment? (required)", ("","Progress","Final"), key="payment_type_input")
-        if val:
-            set_and_next("payment_type", val)
+        st.markdown("### 2 of 13 — Is this waiver for a Progress or Final payment? *")
+        pt = st.radio("", ("", "Progress", "Final"), key="payment_type_widget")
+        if pt and not st.session_state.payment_type_done:
+            st.session_state.payment_type = pt
+            st.session_state.payment_type_done = True
+            st.session_state.step += 1
+        show_next(enabled=bool(pt))
         if st.button("Back"):
-            go_back()
+            st.session_state.step = 2
 
-    # payment_received
+    # Page: Payment Received
     elif st.session_state.step == 4:
-        val = st.radio("Has payment been received for this waiver? (required)", ("","Yes","No"), key="payment_received_input")
-        if val:
-            set_and_next("payment_received", val)
+        st.markdown("### 3 of 13 — Has payment been received for this waiver? *")
+        pr = st.radio("", ("", "Yes", "No"), key="payment_received_widget")
+        if pr and not st.session_state.payment_received_done:
+            st.session_state.payment_received = pr
+            st.session_state.payment_received_done = True
+            st.session_state.step += 1
+        show_next(enabled=bool(pr))
         if st.button("Back"):
-            go_back()
+            st.session_state.step = 3
 
-    # first_delivery (date) - required; show PN calculation in same page
+    # Page: First Delivery Date
     elif st.session_state.step == 5:
-        fd = st.date_input("First Delivery Date (required — used to calculate Preliminary Notice deadline)", key="first_delivery_input")
-        if fd:
+        st.markdown("### 4 of 13 — First Delivery Date (required) *")
+        fd = st.date_input("", key="first_delivery_widget")
+        if fd and not st.session_state.first_delivery_done:
             st.session_state.first_delivery = fd
-            pn_deadline = fd + timedelta(days=20)
-            st.write(f"Preliminary Notice deadline = {pn_deadline.strftime('%Y-%m-%d')}")
-            # next
-            if st.button("Save & Continue"):
-                st.session_state.step += 1
+            st.session_state.first_delivery_done = True
+            st.session_state.step += 1
+        # show PN calculation if set
+        if st.session_state.first_delivery:
+            pn_deadline = st.session_state.first_delivery + timedelta(days=20)
+            st.info(f"Preliminary Notice deadline = {pn_deadline.strftime('%Y-%m-%d')}")
+        show_next(enabled=bool(fd))
         if st.button("Back"):
-            go_back()
+            st.session_state.step = 4
 
-    # WorkThroughDate (only required for Progress)
+    # Page: Work Through Date (only required for Progress)
     elif st.session_state.step == 6:
-        # Only ask this if payment_type == Progress; else skip automatically
-        if st.session_state.get("payment_type") != "Progress":
+        if st.session_state.payment_type != "Progress":
+            # skip automatically
             st.session_state.step += 1
             st.experimental_rerun()
-        wtd = st.date_input("Work Through Date (required for Progress payments)", key="work_through_input")
-        if wtd:
-            set_and_next("work_through_date", wtd)
+        st.markdown("### 5 of 13 — Work Through Date (required for Progress payments) *")
+        wtd = st.date_input("", key="work_through_widget")
+        if wtd and not st.session_state.work_through_done:
+            st.session_state.work_through_date = wtd
+            st.session_state.work_through_done = True
+            st.session_state.step += 1
+        show_next(enabled=bool(wtd))
         if st.button("Back"):
-            go_back()
+            st.session_state.step = 5
 
-    # OwnerName
+    # Page: Owner Name
     elif st.session_state.step == 7:
-        v = st.text_input("Owner Name (required)", key="OwnerName_input")
-        if v and v.strip():
-            set_and_next("OwnerName", v.strip())
+        st.markdown("### 6 of 13 — Owner Name *")
+        oname = st.text_input("", key="OwnerName_widget")
+        if oname and oname.strip():
+            st.session_state.OwnerName = oname.strip()
+        show_next(enabled=bool(st.session_state.OwnerName))
+        if st.button("Next →"):
+            if not st.session_state.OwnerName:
+                st.error("Please enter Owner Name.")
+            else:
+                st.session_state.step += 1
         if st.button("Back"):
-            go_back()
+            st.session_state.step = 6
 
-    # ProjectAddress
+    # Project Address
     elif st.session_state.step == 8:
-        v = st.text_input("Project / Job Address (required)", key="ProjectAddress_input")
-        if v and v.strip():
-            set_and_next("ProjectAddress", v.strip())
+        st.markdown("### 7 of 13 — Project / Job Address *")
+        addr = st.text_input("", key="ProjectAddress_widget")
+        if addr and addr.strip():
+            st.session_state.ProjectAddress = addr.strip()
+        show_next(enabled=bool(st.session_state.ProjectAddress))
+        if st.button("Next →"):
+            if not st.session_state.ProjectAddress:
+                st.error("Please enter Project Address.")
+            else:
+                st.session_state.step += 1
         if st.button("Back"):
-            go_back()
+            st.session_state.step = 7
 
-    # CustomerName
+    # Customer / Paying Entity
     elif st.session_state.step == 9:
-        v = st.text_input("Customer / Paying Entity Name (required)", key="CustomerName_input")
-        if v and v.strip():
-            set_and_next("CustomerName", v.strip())
+        st.markdown("### 8 of 13 — Customer / Paying Entity Name *")
+        cust = st.text_input("", key="CustomerName_widget")
+        if cust and cust.strip():
+            st.session_state.CustomerName = cust.strip()
+        show_next(enabled=bool(st.session_state.CustomerName))
+        if st.button("Next →"):
+            if not st.session_state.CustomerName:
+                st.error("Please enter Customer Name.")
+            else:
+                st.session_state.step += 1
         if st.button("Back"):
-            go_back()
+            st.session_state.step = 8
 
-    # LienorName
+    # Lienor / Contractor
     elif st.session_state.step == 10:
-        v = st.text_input("Lienor / Contractor / Provider Name (required)", key="LienorName_input")
-        if v and v.strip():
-            set_and_next("LienorName", v.strip())
+        st.markdown("### 9 of 13 — Lienor / Contractor / Provider Name *")
+        lio = st.text_input("", key="LienorName_widget")
+        if lio and lio.strip():
+            st.session_state.LienorName = lio.strip()
+        show_next(enabled=bool(st.session_state.LienorName))
+        if st.button("Next →"):
+            if not st.session_state.LienorName:
+                st.error("Please enter Lienor Name.")
+            else:
+                st.session_state.step += 1
         if st.button("Back"):
-            go_back()
+            st.session_state.step = 9
 
-    # LicenseNumber
+    # License Number
     elif st.session_state.step == 11:
-        v = st.text_input("Contractor / Lienor License Number (required)", key="LicenseNumber_input")
-        if v and v.strip():
-            set_and_next("LicenseNumber", v.strip())
+        st.markdown("### 10 of 13 — Contractor / Lienor License Number *")
+        lic = st.text_input("", key="LicenseNumber_widget")
+        if lic and lic.strip():
+            st.session_state.LicenseNumber = lic.strip()
+        show_next(enabled=bool(st.session_state.LicenseNumber))
+        if st.button("Next →"):
+            if not st.session_state.LicenseNumber:
+                st.error("Please enter License Number.")
+            else:
+                st.session_state.step += 1
         if st.button("Back"):
-            go_back()
+            st.session_state.step = 10
 
-    # PaymentAmount - single field with $ in placeholder
+    # Payment Amount (single field, placeholder shows $0.00)
     elif st.session_state.step == 12:
-        v = st.text_input("Payment Amount (required). Include $ sign if you like. Example: $1,234.56", placeholder="$0.00", key="PaymentAmount_input")
-        parsed = parse_currency_input(v)
-        if v and parsed is not None:
-            # store standardized string with $ and comma formatting
-            st.session_state.PaymentAmount = "${:,.2f}".format(parsed)
-            set_and_next("PaymentAmount", st.session_state.PaymentAmount)
-        else:
-            if v and parsed is None:
-                st.error("Payment value not recognised. Use numeric format like $1234.56 or 1234.56")
+        st.markdown("### 11 of 13 — Payment Amount *")
+        amt = st.text_input("", placeholder="$0.00", key="PaymentAmount_widget")
+        parsed = parse_currency_input(amt)
+        if parsed:
+            st.session_state.PaymentAmount = parsed
+        elif amt and not parsed:
+            st.error("Payment value not recognized. Use format like $1234.56 or 1234.56")
+        show_next(enabled=bool(parsed))
+        if st.button("Next →"):
+            if not parsed:
+                st.error("Please enter a valid payment amount.")
+            else:
+                st.session_state.step += 1
         if st.button("Back"):
-            go_back()
+            st.session_state.step = 11
 
-    # ExecutionDate
+    # Execution Date
     elif st.session_state.step == 13:
-        ed = st.date_input("Execution Date (required — when waiver is signed)", value=datetime.today(), key="ExecutionDate_input")
+        st.markdown("### 12 of 13 — Execution Date (when waiver is signed) *")
+        ed = st.date_input("", value=datetime.today(), key="ExecutionDate_widget")
         if ed:
-            set_and_next("ExecutionDate", ed)
+            st.session_state.ExecutionDate = ed
+        show_next(enabled=bool(st.session_state.ExecutionDate))
+        if st.button("Next →"):
+            if not st.session_state.ExecutionDate:
+                st.error("Please select Execution Date.")
+            else:
+                st.session_state.step += 1
         if st.button("Back"):
-            go_back()
+            st.session_state.step = 12
 
-    # JobNumber
+    # Job Number
     elif st.session_state.step == 14:
-        v = st.text_input("Job / Project Number (required)", key="JobNumber_input")
-        if v and v.strip():
-            set_and_next("JobNumber", v.strip())
+        st.markdown("### 13 of 13 — Job / Project Number *")
+        jn = st.text_input("", key="JobNumber_widget")
+        if jn and jn.strip():
+            st.session_state.JobNumber = jn.strip()
+        show_next(enabled=bool(st.session_state.JobNumber))
+        if st.button("Next →"):
+            if not st.session_state.JobNumber:
+                st.error("Please enter Job Number.")
+            else:
+                st.session_state.step += 1
         if st.button("Back"):
-            go_back()
+            st.session_state.step = 13
 
-    # PropertyDescription
+    # Property Description (text area) - after JobNumber we go to review
     elif st.session_state.step == 15:
-        v = st.text_area("Property Description / Legal Description (required)", height=150, key="PropertyDescription_input")
-        if v and v.strip():
-            set_and_next("PropertyDescription", v.strip())
+        st.markdown("### Property Description / Legal Description *")
+        pd = st.text_area("", height=150, key="PropertyDescription_widget")
+        if pd and pd.strip():
+            st.session_state.PropertyDescription = pd.strip()
+        show_next(enabled=bool(st.session_state.PropertyDescription))
+        if st.button("Next →"):
+            if not st.session_state.PropertyDescription:
+                st.error("Please enter Property Description.")
+            else:
+                st.session_state.step += 1
         if st.button("Back"):
-            go_back()
+            st.session_state.step = 14
 
     # Review & Generate
     elif st.session_state.step == 16:
         st.subheader("Review & Generate")
-        # natural layout summary
         st.markdown("Below are the details you provided. If everything looks correct, press **Generate & Download** to create your filled waiver form.")
-        summary_display = {
-            "Owner Name": st.session_state.get("OwnerName",""),
-            "Project Address": st.session_state.get("ProjectAddress",""),
-            "Customer / Paying Entity": st.session_state.get("CustomerName",""),
-            "Lienor / Contractor": st.session_state.get("LienorName",""),
-            "License Number": st.session_state.get("LicenseNumber",""),
-            "Payment Amount": st.session_state.get("PaymentAmount",""),
-            "Work Through Date": (st.session_state.get("work_through_date").strftime("%B %d, %Y") if st.session_state.get("work_through_date") else "N/A"),
-            "Execution Date": (st.session_state.get("ExecutionDate").strftime("%B %d, %Y") if st.session_state.get("ExecutionDate") else ""),
-            "Job / Project Number": st.session_state.get("JobNumber",""),
-            "Property Description": st.session_state.get("PropertyDescription",""),
-            "First Delivery Date": (st.session_state.get("first_delivery").strftime("%B %d, %Y") if st.session_state.get("first_delivery") else "")
-        }
-        # show nicely
-        for k,v in summary_display.items():
-            st.markdown(f"**{k}:** {v}")
+        # present in natural friendly layout
+        st.markdown("---")
+        left_col, right_col = st.columns([2,1])
+        with left_col:
+            st.markdown(f"**Owner:** {st.session_state.OwnerName or ''}")
+            st.markdown(f"**Project Address:** {st.session_state.ProjectAddress or ''}")
+            st.markdown(f"**Customer / Paying Entity:** {st.session_state.CustomerName or ''}")
+            st.markdown(f"**Lienor / Contractor:** {st.session_state.LienorName or ''}")
+            st.markdown(f"**License Number:** {st.session_state.LicenseNumber or ''}")
+            st.markdown(f"**Payment Amount:** {st.session_state.PaymentAmount or ''}")
+            st.markdown(f"**Work Through Date:** {human_date(st.session_state.work_through_date) or 'N/A'}")
+            st.markdown(f"**Execution Date:** {human_date(st.session_state.ExecutionDate) or ''}")
+            st.markdown(f"**Job / Project Number:** {st.session_state.JobNumber or ''}")
+            st.markdown(f"**Property Description:** {st.session_state.PropertyDescription or ''}")
+            st.markdown(f"**First Delivery Date:** {human_date(st.session_state.first_delivery) or ''}")
+        with right_col:
+            # indicate chosen template type (explain)
+            ptype = st.session_state.payment_type or "Progress"
+            paid = st.session_state.payment_received or "No"
+            cond = "Yes" if paid == "No" else "No"
+            template_name = TEMPLATE_MAP.get((ptype, cond), "Selected Template")
+            st.markdown("**Form Type Selected**")
+            st.markdown(f"**{template_name}**")
+            st.caption("This form will be populated with the details above and provided as a .docx file for download.")
+        st.markdown("---")
 
+        # Buttons
         cols = st.columns([1,1,1])
         with cols[0]:
             if st.button("Back"):
                 st.session_state.step = 15
         with cols[2]:
             if st.button("Generate & Download"):
-                # choose template name and find it
-                ptype = st.session_state.get("payment_type","Progress")
-                paid = st.session_state.get("payment_received","No")
-                cond = "Yes" if paid == "No" else "No"  # conditional if payment not received
-                template_key = (ptype, cond)
-                selected_filename = TEMPLATE_MAP.get(template_key)
-                template_path = find_template_file(selected_filename)
-                if not template_path:
-                    st.error("Template file could not be found in Arizona folder.")
+                # Validate required before generating
+                required_checks = [
+                    ("OwnerName", st.session_state.OwnerName),
+                    ("ProjectAddress", st.session_state.ProjectAddress),
+                    ("CustomerName", st.session_state.CustomerName),
+                    ("LienorName", st.session_state.LienorName),
+                    ("LicenseNumber", st.session_state.LicenseNumber),
+                    ("PaymentAmount", st.session_state.PaymentAmount),
+                    ("ExecutionDate", st.session_state.ExecutionDate),
+                    ("JobNumber", st.session_state.JobNumber),
+                    ("PropertyDescription", st.session_state.PropertyDescription),
+                    ("FirstDelivery", st.session_state.first_delivery),
+                ]
+                missing = [k for k,v in required_checks if not v]
+                # WorkThroughDate required for Progress
+                if st.session_state.payment_type == "Progress" and not st.session_state.work_through_date:
+                    missing.append("WorkThroughDate (required for Progress)")
+                if missing:
+                    st.error("Please complete all required fields before generating. Missing: " + ", ".join(missing))
                 else:
-                    # attempt to open as docx (supports case where file is .pdf but actual docx exists)
-                    try:
-                        doc = try_open_docx(template_path)
-                    except Exception as e:
-                        st.error("Could not open the template as a Word (.docx) file. Automatic filling requires a .docx template. If your template is a Word file but named .pdf, place a .docx version in the Arizona folder with same base name.")
-                        st.stop()
+                    # Begin generation: lazy-load only selected template from ZIP
+                    ptype = st.session_state.payment_type
+                    paid = st.session_state.payment_received
+                    cond = "Yes" if paid == "No" else "No"
+                    selected_filename = TEMPLATE_MAP.get((ptype, cond))
+                    if not os.path.exists(ZIP_NAME):
+                        st.error(f"Template ZIP not found: {ZIP_NAME}")
+                    else:
+                        internal_name = find_template_in_zip(ZIP_NAME, selected_filename, state_folder="arizona")
+                        if not internal_name:
+                            st.error("Could not find the selected template inside the ZIP (Arizona folder). Make sure the Arizona folder contains the template.")
+                        else:
+                            # show spinner / wait message and generate
+                            with st.spinner("Please wait… your form is being generated. This may take a few seconds."):
+                                try:
+                                    template_bytes = read_template_bytes_from_zip(ZIP_NAME, internal_name)
+                                    doc = try_open_docx_from_bytes(template_bytes)
+                                except Exception as e:
+                                    st.error("Failed to open the template as a Word document. Ensure the file inside ZIP is a .docx Word file (even if filename ends with .pdf).")
+                                    st.stop()
 
-                    mapping = {
-                        "{{OwnerName}}": st.session_state.get("OwnerName",""),
-                        "{{ProjectAddress}}": st.session_state.get("ProjectAddress",""),
-                        "{{CustomerName}}": st.session_state.get("CustomerName",""),
-                        "{{LienorName}}": st.session_state.get("LienorName",""),
-                        "{{LicenseNumber}}": st.session_state.get("LicenseNumber",""),
-                        "{{PaymentAmount}}": st.session_state.get("PaymentAmount",""),
-                        "{{WorkThroughDate}}": (st.session_state.get("work_through_date").strftime("%B %d, %Y") if st.session_state.get("work_through_date") else ""),
-                        "{{ExecutionDate}}": (st.session_state.get("ExecutionDate").strftime("%B %d, %Y") if st.session_state.get("ExecutionDate") else ""),
-                        "{{AuthorizedRep}}": st.session_state.get("AuthorizedRep","") if "AuthorizedRep" in st.session_state else "",
-                        "{{JobNumber}}": st.session_state.get("JobNumber",""),
-                        "{{PropertyDescription}}": st.session_state.get("PropertyDescription",""),
-                        "{{FirstDeliveryDate}}": (st.session_state.get("first_delivery").strftime("%B %d, %Y") if st.session_state.get("first_delivery") else "")
-                    }
+                                # build mapping for placeholders
+                                mapping = {
+                                    "{{OwnerName}}": st.session_state.OwnerName or "",
+                                    "{{ProjectAddress}}": st.session_state.ProjectAddress or "",
+                                    "{{CustomerName}}": st.session_state.CustomerName or "",
+                                    "{{LienorName}}": st.session_state.LienorName or "",
+                                    "{{LicenseNumber}}": st.session_state.LicenseNumber or "",
+                                    "{{PaymentAmount}}": st.session_state.PaymentAmount or "",
+                                    "{{WorkThroughDate}}": human_date(st.session_state.work_through_date) if st.session_state.work_through_date else "",
+                                    "{{ExecutionDate}}": human_date(st.session_state.ExecutionDate) if st.session_state.ExecutionDate else "",
+                                    "{{AuthorizedRep}}": "",
+                                    "{{JobNumber}}": st.session_state.JobNumber or "",
+                                    "{{PropertyDescription}}": st.session_state.PropertyDescription or "",
+                                    "{{FirstDeliveryDate}}": human_date(st.session_state.first_delivery) if st.session_state.first_delivery else ""
+                                }
 
-                    replace_all(doc, mapping)
+                                replace_placeholders_in_doc(doc, mapping)
 
-                    # save and offer download
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-                        tmp_path = tmp.name
-                        doc.save(tmp_path)
-                    display_name = f"Lienify_AZ_{ptype}_{'Conditional' if cond=='Yes' else 'Unconditional'}_{datetime.today().strftime('%Y%m%d')}.docx"
-                    with open(tmp_path, "rb") as f:
-                        st.download_button("Download Filled Waiver (.docx)", data=f, file_name=display_name, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-                    st.success("Generated document includes all provided details.")
+                                # save to temp and provide download
+                                out_tf = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
+                                try:
+                                    doc.save(out_tf.name)
+                                    out_tf.close()
+                                    display_name = f"Lienify_AZ_{ptype}_{'Conditional' if cond=='Yes' else 'Unconditional'}_{datetime.today().strftime('%Y%m%d')}.docx"
+                                    with open(out_tf.name, "rb") as f:
+                                        st.download_button("Download Filled Waiver (.docx)", data=f, file_name=display_name,
+                                                           mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                                    st.success("Generated document includes all provided details.")
+                                finally:
+                                    try:
+                                        os.unlink(out_tf.name)
+                                    except Exception:
+                                        pass
